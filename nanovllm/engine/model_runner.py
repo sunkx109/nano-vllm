@@ -92,7 +92,7 @@ class ModelRunner:
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
         max_num_batched_tokens, max_model_len = self.config.max_num_batched_tokens, self.config.max_model_len
-        num_seqs = min(max_num_batched_tokens // max_model_len, self.config.max_num_seqs)
+        num_seqs = min(max_num_batched_tokens // max_model_len, self.config.max_num_seqs) # batchsize
         seqs = [Sequence([0] * max_model_len) for _ in range(num_seqs)]
         self.run(seqs, True)
         torch.cuda.empty_cache()
@@ -102,12 +102,16 @@ class ModelRunner:
         hf_config = config.hf_config
         free, total = torch.cuda.mem_get_info()
         used = total - free
-        peak = torch.cuda.memory_stats()["allocated_bytes.all.peak"]
-        current = torch.cuda.memory_stats()["allocated_bytes.all.current"]
-        num_kv_heads = hf_config.num_key_value_heads // self.world_size
+        peak = torch.cuda.memory_stats()["allocated_bytes.all.peak"] # 历史最高的已分配 CUDA 内存	
+        current = torch.cuda.memory_stats()["allocated_bytes.all.current"] # 当前正在使用的已分配 CUDA 内存
+        num_kv_heads = hf_config.num_key_value_heads // self.world_size # 拆分KV到不同GPU
+        # 2* n_layer * n_kv_head * block_size * head_dim * dtype_size
         block_bytes = 2 * hf_config.num_hidden_layers * self.block_size * num_kv_heads * hf_config.head_dim * hf_config.torch_dtype.itemsize
+        # n_kv_blocks = (total * gpu_memory_utilization - used - peak + current) // block_bytes
         config.num_kvcache_blocks = int(total * config.gpu_memory_utilization - used - peak + current) // block_bytes
         assert config.num_kvcache_blocks > 0
+        # 分配kv cache空间, 2*n_layer*n_kv_blocks*block_size* n_kv_head* head_dim
+        # 这里的n_kv_blocks * block_size 也就是seqlen的维度
         self.kv_cache = torch.empty(2, hf_config.num_hidden_layers, config.num_kvcache_blocks, self.block_size, num_kv_heads, hf_config.head_dim)
         layer_id = 0
         for module in self.model.modules():
@@ -117,8 +121,9 @@ class ModelRunner:
                 layer_id += 1
 
     def prepare_block_tables(self, seqs: list[Sequence]):
-        max_len = max(len(seq.block_table) for seq in seqs)
-        block_tables = [seq.block_table + [-1] * (max_len - len(seq.block_table)) for seq in seqs]
+        max_len = max(len(seq.block_table) for seq in seqs)# 找到最长的seqlen
+        block_tables = [seq.block_table + [-1] * (max_len - len(seq.block_table)) for seq in seqs] # 补齐blocktable,[num_seqs,max_len]
+        # 其实block_table通常是一个整数列表，记录了该序列所使用的 KV 缓存块的索引
         block_tables = torch.tensor(block_tables, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         return block_tables
 
@@ -133,8 +138,8 @@ class ModelRunner:
         block_tables = None
         for seq in seqs:
             seqlen = len(seq)
-            input_ids.extend(seq[seq.num_cached_tokens:])
-            positions.extend(list(range(seq.num_cached_tokens, seqlen)))
+            input_ids.extend(seq[seq.num_cached_tokens:]) # 往后追加当前seq的tokens_id
+            positions.extend(list(range(seq.num_cached_tokens, seqlen))) # 往后追加当前seq的tokens的位置
             seqlen_q = seqlen - seq.num_cached_tokens
             seqlen_k = seqlen
             cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen_q)
