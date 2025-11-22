@@ -107,13 +107,14 @@ class ModelRunner:
         num_kv_heads = hf_config.num_key_value_heads // self.world_size # 拆分KV到不同GPU
         # 2* n_layer * n_kv_head * block_size * head_dim * dtype_size
         block_bytes = 2 * hf_config.num_hidden_layers * self.block_size * num_kv_heads * hf_config.head_dim * hf_config.torch_dtype.itemsize
-        # n_kv_blocks = (total * gpu_memory_utilization - used - peak + current) // block_bytes
+        # n_kv_blocks = (total * gpu_memory_utilization - used - (peak - current)) // block_bytes
         config.num_kvcache_blocks = int(total * config.gpu_memory_utilization - used - peak + current) // block_bytes
         assert config.num_kvcache_blocks > 0
         # 分配kv cache空间, 2*n_layer*n_kv_blocks*block_size* n_kv_head* head_dim
         # 这里的n_kv_blocks * block_size 也就是seqlen的维度
         self.kv_cache = torch.empty(2, hf_config.num_hidden_layers, config.num_kvcache_blocks, self.block_size, num_kv_heads, hf_config.head_dim)
         layer_id = 0
+        # 将kv_cache分配到模型的每一层
         for module in self.model.modules():
             if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
                 module.k_cache = self.kv_cache[0, layer_id]
@@ -142,8 +143,8 @@ class ModelRunner:
             positions.extend(list(range(seq.num_cached_tokens, seqlen))) # 往后追加当前seq的tokens的位置
             seqlen_q = seqlen - seq.num_cached_tokens
             seqlen_k = seqlen
-            cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen_q)
-            cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
+            cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen_q) # 按序累加每个seq的seqlen_q的列表
+            cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k) # 按序累加每个seq的seqlen_k的列表
             max_seqlen_q = max(seqlen_q, max_seqlen_q)
             max_seqlen_k = max(seqlen_k, max_seqlen_k)
             if not seq.block_table:    # warmup

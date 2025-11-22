@@ -42,8 +42,8 @@ class LLMEngine:
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
         if isinstance(prompt, str):
             prompt = self.tokenizer.encode(prompt)
-        seq = Sequence(prompt, sampling_params)
-        self.scheduler.add(seq)
+        seq = Sequence(prompt, sampling_params) # 根据prompt创建Sequeue
+        self.scheduler.add(seq) # 然后将seq添加至waiting队列
 
     def step(self):
         seqs, is_prefill = self.scheduler.schedule()

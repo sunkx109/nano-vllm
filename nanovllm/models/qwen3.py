@@ -169,7 +169,7 @@ class Qwen3Model(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
     ) -> torch.Tensor:
-        hidden_states = self.embed_tokens(input_ids)
+        hidden_states = self.embed_tokens(input_ids) # [batch_size, seq_len, hidden_size]
         residual = None
         for layer in self.layers:
             hidden_states, residual = layer(positions, hidden_states, residual)
